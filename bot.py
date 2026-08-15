@@ -88,7 +88,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         ai_reply = None
         # Using current, official model identifiers
-        models_to_try = ['gemini-2.5-flash', 'gemini-2.0-flash']
+        models_to_try = ['gemini-1.5-flash', 'gemini-1.5-pro']
 
         for model_name in models_to_try:
             success = False

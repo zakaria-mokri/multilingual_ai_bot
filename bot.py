@@ -61,8 +61,16 @@ def get_working_models():
     except Exception as e:
         logger.error(f"Could not list models: {e}")
     
-    # Fallback list if listing models fails
     return ['gemini-1.5-flash', 'gemini-1.5-pro']
+
+async def keep_typing_active(context, chat_id, stop_event):
+    """Keeps sending 'typing' action every 4 seconds until stop_event is set."""
+    while not stop_event.is_set():
+        try:
+            await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+        except Exception:
+            pass
+        await asyncio.sleep(4)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
@@ -76,8 +84,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     user_query = update.message.text
+    chat_id = update.effective_chat.id
 
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    # Start continuous typing indicator loop
+    stop_typing_event = asyncio.Event()
+    typing_task = asyncio.create_task(keep_typing_active(context, chat_id, stop_typing_event))
 
     try:
         with get_db_connection() as conn:
@@ -109,27 +120,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         formatted_prompt_parts.append(f"User Question: {user_query}")
         full_user_content = "\n".join(formatted_prompt_parts)
 
+        # Run model query inside asyncio executor to prevent blocking event loop
+        loop = asyncio.get_running_loop()
+
         for model_name in models_to_try:
-            success = False
-            for attempt in range(2):
-                try:
-                    response = client.models.generate_content(
-                        model=model_name,
+            try:
+                response = await loop.run_in_executor(
+                    None,
+                    lambda m=model_name: client.models.generate_content(
+                        model=m,
                         contents=full_user_content,
                         config=types.GenerateContentConfig(
                             system_instruction=system_prompt
                         )
                     )
-                    if response and response.text:
-                        ai_reply = response.text
-                        success = True
-                        break
-                except Exception as e:
-                    logger.error(f"Error querying {model_name} (attempt {attempt+1}): {e}")
-                    await asyncio.sleep(1)
-                    continue
-            if success:
-                break
+                )
+                if response and response.text:
+                    ai_reply = response.text
+                    break
+            except Exception as e:
+                logger.error(f"Error querying {model_name}: {e}")
+                continue
 
         if not ai_reply:
             ai_reply = "The AI servers are busy right now. Please try your message again in a moment."
@@ -139,11 +150,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             cursor.execute("INSERT INTO chat_history (user_id, role, message) VALUES (?, ?, ?)", (user_id, "user", user_query))
             cursor.execute("INSERT INTO chat_history (user_id, role, message) VALUES (?, ?, ?)", (user_id, "assistant", ai_reply))
 
-        await update.message.reply_text(ai_reply)
-
     except Exception as e:
         logger.error(f"Unhandled error in handle_message: {e}", exc_info=True)
-        await update.message.reply_text("Sorry, an error occurred while processing your request.")
+        ai_reply = "Sorry, an error occurred while processing your request."
+    finally:
+        # Stop typing indicator
+        stop_typing_event.set()
+        await typing_task
+
+    await update.message.reply_text(ai_reply)
 
 def main():
     if not TOKEN or not GEMINI_API_KEY:

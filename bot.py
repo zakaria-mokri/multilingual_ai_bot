@@ -47,6 +47,23 @@ def init_db():
             )
         """)
 
+def get_working_models():
+    """Dynamically discover valid models available for this API key."""
+    try:
+        discovered = []
+        for m in client.models.list():
+            model_id = m.name.replace("models/", "") if hasattr(m, "name") else str(m)
+            discovered.append(model_id)
+        
+        logger.info(f"Discovered active models for API key: {discovered}")
+        if discovered:
+            return discovered
+    except Exception as e:
+        logger.error(f"Could not list models: {e}")
+    
+    # Fallback list if listing models fails
+    return ['gemini-1.5-flash', 'gemini-1.5-pro']
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     
@@ -83,10 +100,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
 
         ai_reply = None
-        # Stable, widely supported Gemini model identifiers
-        models_to_try = ['gemini-1.5-flash', 'gemini-1.5-pro']
+        models_to_try = get_working_models()
 
-        # Construct prompt history string
         formatted_prompt_parts = []
         for role, msg in past_msgs:
             prefix = "User: " if role == "user" else "Assistant: "

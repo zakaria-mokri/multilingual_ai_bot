@@ -4,6 +4,7 @@ import sqlite3
 import logging
 from dotenv import load_dotenv
 from google import genai
+from google.genai import types
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -28,34 +29,30 @@ def get_db_connection():
 
 def init_db():
     """Ensure database tables exist before performing queries."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS knowledge (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            category TEXT,
-            content TEXT
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS chat_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            role TEXT,
-            message TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS knowledge (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                category TEXT,
+                content TEXT
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS chat_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                role TEXT,
+                message TEXT
+            )
+        """)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM chat_history WHERE user_id = ?", (user_id,))
-    conn.commit()
-    conn.close()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM chat_history WHERE user_id = ?", (user_id,))
     
     await update.message.reply_text("Hello! I am your cloud-hosted AI assistant connected to your database. Ask me anything!")
 
@@ -66,16 +63,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT category, content FROM knowledge")
-        all_knowledge = cursor.fetchall()
-        
-        db_context_str = "\n".join([f"- [{cat}]: {content}" for cat, content in all_knowledge]) if all_knowledge else "No custom database entries found yet."
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT category, content FROM knowledge")
+            all_knowledge = cursor.fetchall()
+            
+            db_context_str = "\n".join([f"- [{cat}]: {content}" for cat, content in all_knowledge]) if all_knowledge else "No custom database entries found yet."
 
-        cursor.execute("SELECT role, message FROM chat_history WHERE user_id = ? ORDER BY id DESC LIMIT 6", (user_id,))
-        past_msgs = cursor.fetchall()
-        conn.close()
+            cursor.execute("SELECT role, message FROM chat_history WHERE user_id = ? ORDER BY id DESC LIMIT 6", (user_id,))
+            past_msgs = cursor.fetchall()
 
         past_msgs.reverse()
 
@@ -87,29 +83,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
 
         ai_reply = None
-        # Using current, official model identifiers
+        # Stable, widely supported Gemini model identifiers
         models_to_try = ['gemini-1.5-flash', 'gemini-1.5-pro']
+
+        # Construct prompt history string
+        formatted_prompt_parts = []
+        for role, msg in past_msgs:
+            prefix = "User: " if role == "user" else "Assistant: "
+            formatted_prompt_parts.append(f"{prefix}{msg}")
+        formatted_prompt_parts.append(f"User Question: {user_query}")
+        full_user_content = "\n".join(formatted_prompt_parts)
 
         for model_name in models_to_try:
             success = False
             for attempt in range(2):
                 try:
-                    contents = [f"System Instructions: {system_prompt}"]
-                    for role, msg in past_msgs:
-                        prefix = "User: " if role == "user" else "Assistant: "
-                        contents.append(prefix + msg)
-                    contents.append(f"User Question: {user_query}")
-
                     response = client.models.generate_content(
                         model=model_name,
-                        contents=contents,
+                        contents=full_user_content,
+                        config=types.GenerateContentConfig(
+                            system_instruction=system_prompt
+                        )
                     )
-                    ai_reply = response.text
-                    success = True
-                    break
+                    if response and response.text:
+                        ai_reply = response.text
+                        success = True
+                        break
                 except Exception as e:
                     logger.error(f"Error querying {model_name} (attempt {attempt+1}): {e}")
-                    await asyncio.sleep(1)  # Non-blocking async sleep
+                    await asyncio.sleep(1)
                     continue
             if success:
                 break
@@ -117,14 +119,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if not ai_reply:
             ai_reply = "The AI servers are busy right now. Please try your message again in a moment."
 
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO chat_history (user_id, role, message) VALUES (?, ?, ?)", (user_id, "user", user_query))
-        cursor.execute("INSERT INTO chat_history (user_id, role, message) VALUES (?, ?, ?)", (user_id, "assistant", ai_reply))
-        conn.commit()
-        conn.close()
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO chat_history (user_id, role, message) VALUES (?, ?, ?)", (user_id, "user", user_query))
+            cursor.execute("INSERT INTO chat_history (user_id, role, message) VALUES (?, ?, ?)", (user_id, "assistant", ai_reply))
 
-        # Send response without strict Markdown parsing to avoid crashes on special formatting characters
         await update.message.reply_text(ai_reply)
 
     except Exception as e:
@@ -133,10 +132,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 def main():
     if not TOKEN or not GEMINI_API_KEY:
-        print("❌ Error: Missing tokens in .env file.")
+        logger.error("❌ Error: Missing tokens in environment variables.")
         return
 
-    # Initialize SQLite database tables
     init_db()
 
     application = Application.builder().token(TOKEN).build()

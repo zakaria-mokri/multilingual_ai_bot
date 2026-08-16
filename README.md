@@ -35,8 +35,8 @@ Powered by Google's Gemini API, deployed on Render, source of truth on GitHub.
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/zakaria-mokri/multilingual_ai_bot.git
-cd multilingual_ai_bot
+git clone https://github.com/zakaria-mokri/ai-mechanic-bot.git
+cd ai-mechanic-bot
 ```
 
 ### 2. Install dependencies

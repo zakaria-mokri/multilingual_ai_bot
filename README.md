@@ -1,4 +1,4 @@
-# 🔧 Mo — AI Mechanic Bot
+# 🔧 AI Mechanic Bot
 
 A Telegram bot that talks like an experienced mechanic at your local shop — not a generic AI assistant. Describe a car problem or send a photo of a part, and Mo diagnoses it, tells you what's safe to drive on, and when to bring it in.
 
